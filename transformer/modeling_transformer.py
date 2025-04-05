@@ -401,41 +401,26 @@ class Transformer(nn.Module):
 
 
 if __name__ == "__main__":
+    from ..utils import generate_batch_text_tokens
+
     config = TransformerConfig()
 
-    src_lens = [4, 10, 6]
-    src = torch.stack(
-        list(
-            torch.concat(
-                (
-                    torch.randint(1, config.vocab_size, (L,)),
-                    torch.zeros(max(src_lens) - L),
-                )
-            )
-            for L in src_lens
-        ),
-        dim=0,
-    ).to(torch.long)
-    src_padding_mask = src == 0
+    device = torch.device(0)
+    pad_index = 0
 
-    tgt_lens = [6, 8, 12]
-    tgt = torch.stack(
-        list(
-            torch.concat(
-                (
-                    torch.randint(1, config.vocab_size, (L,)),
-                    torch.zeros(max(tgt_lens) - L),
-                )
-            )
-            for L in tgt_lens
-        ),
-        dim=0,
-    ).to(torch.long)
-    tgt_padding_mask = tgt == 0
+    src = generate_batch_text_tokens(
+        [4, 8, 6], max_len=10, vocab_size=config.vocab_size, pad_index=pad_index
+    ).to(device)
+    src_padding_mask = src == pad_index
 
-    causal_mask = generate_causal_mask(tgt.size()[1])
+    tgt = generate_batch_text_tokens(
+        [6, 8, 12], max_len=12, vocab_size=config.vocab_size, pad_index=pad_index
+    ).to(device)
+    tgt_padding_mask = tgt == pad_index
 
-    model = Transformer(config)
+    causal_mask = generate_causal_mask(tgt.size()[1]).to(device)
+
+    model = Transformer(config).to(device)
 
     output = model.forward(
         src,
