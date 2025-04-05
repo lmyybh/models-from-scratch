@@ -28,17 +28,13 @@ class PositionalEncoding(nn.Module):
 
 
 class TokenEmbeddings(nn.Module):
-    def __init__(self, config: TransformerConfig):
+    def __init__(self, vocab_size, hidden_size):
         super().__init__()
-        self.lut = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.scaling = config.hidden_size**0.5
-        self.pe = PositionalEncoding(config)
+        self.lut = nn.Embedding(vocab_size, hidden_size)
+        self.scaling = hidden_size**0.5
 
     def forward(self, text: Tensor) -> Tensor:
-        x = self.lut(text) * self.scaling
-        x += self.pe(x)
-
-        return x
+        return self.lut(text) * self.scaling
 
 
 def generate_causal_mask(size):
@@ -358,7 +354,7 @@ class TransformerDecoder(nn.Module):
 class TransformerOutputLayer(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
-        self.linear = nn.Linear(config.hidden_size, config.vocab_size)
+        self.linear = nn.Linear(config.hidden_size, config.tgt_vocab_size)
 
     def forward(self, hidden_state: Tensor):
         return torch.softmax(self.linear(hidden_state), dim=-1)
@@ -367,7 +363,13 @@ class TransformerOutputLayer(nn.Module):
 class Transformer(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
-        self.token_embeddings = TokenEmbeddings(config)
+        self.input_embeddings = TokenEmbeddings(
+            config.src_vocab_size, config.hidden_size
+        )
+        self.output_embeddings = TokenEmbeddings(
+            config.tgt_vocab_size, config.hidden_size
+        )
+        self.positional_encoding = PositionalEncoding(config)
         self.encoder = TransformerEncoder(config)
         self.decoder = TransformerDecoder(config)
         self.output = TransformerOutputLayer(config)
@@ -383,8 +385,10 @@ class Transformer(nn.Module):
         memory_key_padding_mask: Optional[Tensor] = None,
         memory_attn_mask: Optional[Tensor] = None,
     ):
-        src = self.token_embeddings(src)
-        tgt = self.token_embeddings(tgt)
+        src = self.input_embeddings(src)
+        src = self.positional_encoding(src)
+        tgt = self.output_embeddings(tgt)
+        tgt = self.positional_encoding(tgt)
 
         encoder_outputs = self.encoder(src, src_key_padding_mask, src_attn_mask)
         output = self.decoder(
@@ -409,12 +413,12 @@ if __name__ == "__main__":
     pad_index = 0
 
     src = generate_batch_text_tokens(
-        [4, 8, 6], max_len=10, vocab_size=config.vocab_size, pad_index=pad_index
+        [4, 8, 6], max_len=10, vocab_size=config.src_vocab_size, pad_index=pad_index
     ).to(device)
     src_padding_mask = src == pad_index
 
     tgt = generate_batch_text_tokens(
-        [6, 8, 12], max_len=12, vocab_size=config.vocab_size, pad_index=pad_index
+        [6, 8, 12], max_len=12, vocab_size=config.tgt_vocab_size, pad_index=pad_index
     ).to(device)
     tgt_padding_mask = tgt == pad_index
 
@@ -433,4 +437,3 @@ if __name__ == "__main__":
         memory_attn_mask=None,
     )
     print(output.shape)
-    breakpoint()

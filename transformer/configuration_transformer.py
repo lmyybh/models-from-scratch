@@ -7,7 +7,8 @@ class TransformerConfig(ModelConfig):
 
     def __init__(
         self,
-        vocab_size=1000,
+        src_vocab_size=1000,
+        tgt_vocab_size=1200,
         hidden_size=512,
         max_position_embeddings=512,
         num_layers=6,
@@ -20,7 +21,8 @@ class TransformerConfig(ModelConfig):
     ):
         super().__init__(**kwargs)
 
-        self.vocab_size = vocab_size
+        self.src_vocab_size = src_vocab_size
+        self.tgt_vocab_size = tgt_vocab_size
         self.hidden_size = hidden_size
         self.max_position_embeddings = max_position_embeddings
         self.num_layers = num_layers
