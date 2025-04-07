@@ -41,10 +41,8 @@ class CollactorWithPadding:
         self.max_length = max_length
         self.truncation = truncation
         self.reture_tensors = reture_tensors
-
-    def __call__(self, batch):
-        batch_en, batch_zh = list(zip(*batch))
-
+        
+    def encode_english(self, batch_en):
         batch_en_tokens = self.en_tokenizer.batch_encode_plus(
             batch_en,
             padding=self.padding,
@@ -53,15 +51,27 @@ class CollactorWithPadding:
             return_tensors=self.reture_tensors,
         )
         batch_en_tokens["attention_mask"] = ~batch_en_tokens["attention_mask"].to(bool)
-
+        
+        return batch_en_tokens
+        
+    def encode_chinese(self, batch_zh):
         batch_zh_tokens = self.zh_tokenizer.batch_encode_plus(
-            batch_en,
+            batch_zh,
             padding=self.padding,
             max_length=self.max_length,
             truncation=self.truncation,
             return_tensors=self.reture_tensors,
         )
         batch_zh_tokens["attention_mask"] = ~batch_zh_tokens["attention_mask"].to(bool)
+        
+        return batch_zh_tokens
+        
+
+    def __call__(self, batch):
+        batch_en, batch_zh = list(zip(*batch))
+
+        batch_en_tokens = self.encode_english(batch_en)
+        batch_zh_tokens = self.encode_chinese(batch_zh)
 
         return {"en": batch_en_tokens, "zh": batch_zh_tokens}
 
