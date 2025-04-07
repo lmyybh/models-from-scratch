@@ -357,7 +357,7 @@ class TransformerOutputLayer(nn.Module):
         self.linear = nn.Linear(config.hidden_size, config.tgt_vocab_size)
 
     def forward(self, hidden_state: Tensor):
-        return torch.softmax(self.linear(hidden_state), dim=-1)
+        return self.linear(hidden_state)
 
 
 class Transformer(nn.Module):
