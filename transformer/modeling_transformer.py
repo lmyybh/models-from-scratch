@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
@@ -109,7 +109,7 @@ class MultiHeadAttention(nn.Module):
 
     def merge_masks(
         self, key_padding_mask: Optional[Tensor], attn_mask: Optional[Tensor]
-    ) -> Tensor | None:
+    ) -> Union[Tensor, None]:
         """merge two masks
 
         Args:
