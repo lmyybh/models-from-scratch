@@ -3,6 +3,7 @@ import os
 work_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(work_dir)
 
+import logging
 import yaml
 from tqdm import tqdm
 import random
@@ -10,7 +11,9 @@ import numpy as np
 import torch
 
 from ...transformer import TransformerConfig, Transformer, generate_causal_mask
-from .data import en_tokenizer, zh_tokenizer, train_dataloader
+from .data import en_tokenizer, zh_tokenizer, collactor, train_dataloader
+
+logger = logging.getLogger(__name__)
 
 
 def init_seed(seed):
@@ -22,7 +25,6 @@ def init_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-
 
 class Trainer:
     def __init__(self, config) -> None:
@@ -40,12 +42,14 @@ class Trainer:
         self.epochs = self.config["train"]["epochs"]
         self.device = torch.device(self.config["train"]["gpu"])
         self.lr = self.config["train"]["lr"]
+        self.output_folder = self.config["train"]["output_folder"]
+        self.max_length = self.config["tokenizer"]["max_length"]
 
     def load_model(self):
         model_config = TransformerConfig(
             src_vocab_size=en_tokenizer.vocab_size,
             tgt_vocab_size=zh_tokenizer.vocab_size,
-            **self.config["model"]
+            **self.config["model"],
         )
 
         model = Transformer(model_config).to(self.device)
@@ -60,15 +64,28 @@ class Trainer:
     def load_criterion(self):
         self.criterion = torch.nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)
 
-    def train(self, train_dataloder):
-        self.model.train()
+    def save_checkpoint(self):
+        checkpoint_file = os.path.join(self.output_folder, "transformer.pth")
+        torch.save(self.model.state_dict(), checkpoint_file)
+        logger.info("Save:", checkpoint_file)
+
+    def train(self, train_dataloader):
         for epoch in range(self.epochs):
-            for batch_idx, data in enumerate(tqdm(train_dataloder, ncols=100)):
-                self.train_batch(batch_idx, data)
+            # train
+            with tqdm(total=len(train_dataloader), ncols=150) as _tqdm:
+                _tqdm.set_description(f"epoch: {epoch+1}/{self.epochs}")
 
-            break
+                self.model.train()
+                for batch_idx, data in enumerate(train_dataloader):
+                    self.train_batch(batch_idx, data, _tqdm)
 
-    def train_batch(self, batch_idx, data):
+            # save checkpoint
+            self.save_checkpoint()
+
+            # evalution
+            self.evaluation()
+
+    def train_batch(self, batch_idx, data, _tqdm):
         src = data["en"]["input_ids"].to(self.device)
         src_padding_mask = data["en"]["attention_mask"].to(self.device)
 
@@ -91,11 +108,62 @@ class Trainer:
         loss = self.criterion(
             output.view(-1, output.size()[-1]), tgt[:, 1:].reshape(-1)
         )
-        print(loss.item())
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        _tqdm.set_postfix(loss=f"{loss.item():.4f}")
+        _tqdm.update(1)
+
+    def evaluation(self):
+        self.model.eval()
+
+        print()
+
+        en_texts = [
+            "new Questions Over California Water Project",
+            "You actually have to implement the solution – and be willing to change course if it turns out that you did not know quite as much as you thought.",
+        ]
+        for en_text in en_texts:
+            zh_text = self.translate(en_text)
+            print(en_text, zh_text)
+
+    def translate(self, en_text):
+        self.model.eval()
+
+        with torch.no_grad():
+            en_tokens = collactor.encode_english([en_text])
+            src = en_tokens["input_ids"].to(self.device)
+            src_padding_mask = en_tokens["attention_mask"].to(self.device)
+
+            encoder_outputs = self.model.encode(src, src_padding_mask)
+
+            zh_text = ""
+            for _ in range(self.max_length):
+                zh_tokens = collactor.encode_chinese([zh_text])
+
+                tgt = zh_tokens["input_ids"][:, :-1].to(self.device)
+                tgt_padding_mask = zh_tokens["attention_mask"][:, :-1].to(self.device)
+                causal_mask = generate_causal_mask(tgt.size()[1]).to(self.device)
+
+                output = self.model.decode(
+                    tgt,
+                    encoder_outputs,
+                    tgt_key_padding_mask=tgt_padding_mask,
+                    tgt_attn_mask=causal_mask,
+                    memory_key_padding_mask=src_padding_mask,
+                    memory_attn_mask=None,
+                )
+                token_id = output[0][-1].argmax().item()
+
+                if token_id == zh_tokenizer.sep_token_id:
+                    break
+
+                word = zh_tokenizer.convert_ids_to_tokens(token_id)
+                zh_text += word
+
+        return zh_text
 
 
 if __name__ == "__main__":

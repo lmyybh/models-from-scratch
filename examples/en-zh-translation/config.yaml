@@ -1,19 +1,19 @@
 dataset:
   train:
-    en: /data1/glcheng/download/translation-dataset/train/news-commentary-v13.zh-en.en
-    zh: /data1/glcheng/download/translation-dataset/train/news-commentary-v13.zh-en.zh
+    en: /mnt/z/datasets/translation-dataset/train/news-commentary-v13.zh-en.en
+    zh: /mnt/z/datasets/translation-dataset/train/news-commentary-v13.zh-en.zh
   dev:
-    en: /data1/glcheng/download/translation-dataset/dev/newsdev2017.tc.en
-    zh: /data1/glcheng/download/translation-dataset/dev/newsdev2017.tc.zh
+    en: /mnt/z/datasets/translation-dataset/dev/newsdev2017.tc.en
+    zh: /mnt/z/datasets/translation-dataset/dev/newsdev2017.tc.zh
   test:
-    en: /data1/glcheng/download/translation-dataset/test/newstest2017.tc.en
-    zh: /data1/glcheng/download/translation-dataset/test/newstest2017.tc.zh
+    en: /mnt/z/datasets/translation-dataset/test/newstest2017.tc.en
+    zh: /mnt/z/datasets/translation-dataset/test/newstest2017.tc.zh
 
 tokenizer:
-  en: /data1/glcheng/download/translation-dataset/tokenizer/bert-base-uncased
-  zh: /data1/glcheng/download/translation-dataset/tokenizer/bert-base-chinese
+  en: bert-base-uncased
+  zh: bert-base-chinese
   padding: True
-  max_length: 512
+  max_length: 128
   truncation: True
   reture_tensors: pt
 
@@ -29,8 +29,9 @@ model:
 
 train:
   seed: 420
-  gpu: 6
-  batch_size: 4
-  num_workers: 4
+  gpu: 0
+  batch_size: 64
+  num_workers: 16
   epochs: 10
   lr: 0.001
+  output_folder: /mnt/z/models/transformer
