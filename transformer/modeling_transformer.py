@@ -373,6 +373,53 @@ class Transformer(nn.Module):
         self.encoder = TransformerEncoder(config)
         self.decoder = TransformerDecoder(config)
         self.output = TransformerOutputLayer(config)
+        
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                m.weight.data = nn.init.trunc_normal_(
+                    m.weight.data.to(torch.float32), mean=0.0, std=0.1
+                ).to(m.weight.dtype)
+            elif isinstance(m, nn.Embedding):
+                m.weight.data.normal_(mean=0.0, std=0.1)
+
+    def encode(
+        self,
+        src: Tensor,
+        src_key_padding_mask: Optional[Tensor] = None,
+        src_attn_mask: Optional[Tensor] = None,
+    ) -> tuple:
+        src = self.input_embeddings(src)
+        src = self.positional_encoding(src)
+
+        encoder_outputs = self.encoder(src, src_key_padding_mask, src_attn_mask)
+
+        return encoder_outputs
+
+    def decode(
+        self,
+        tgt: Tensor,
+        encoder_outputs: tuple,
+        tgt_key_padding_mask: Optional[Tensor] = None,
+        tgt_attn_mask: Optional[Tensor] = None,
+        memory_key_padding_mask: Optional[Tensor] = None,
+        memory_attn_mask: Optional[Tensor] = None,
+    ):
+        tgt = self.output_embeddings(tgt)
+        tgt = self.positional_encoding(tgt)
+        output = self.decoder(
+            tgt,
+            encoder_outputs,
+            tgt_key_padding_mask,
+            tgt_attn_mask,
+            memory_key_padding_mask,
+            memory_attn_mask,
+        )
+        output = self.output(output)
+
+        return output
 
     def forward(
         self,
@@ -385,13 +432,9 @@ class Transformer(nn.Module):
         memory_key_padding_mask: Optional[Tensor] = None,
         memory_attn_mask: Optional[Tensor] = None,
     ):
-        src = self.input_embeddings(src)
-        src = self.positional_encoding(src)
-        tgt = self.output_embeddings(tgt)
-        tgt = self.positional_encoding(tgt)
+        encoder_outputs = self.encode(src, src_key_padding_mask, src_attn_mask)
 
-        encoder_outputs = self.encoder(src, src_key_padding_mask, src_attn_mask)
-        output = self.decoder(
+        output = self.decode(
             tgt,
             encoder_outputs,
             tgt_key_padding_mask,
@@ -399,7 +442,6 @@ class Transformer(nn.Module):
             memory_key_padding_mask,
             memory_attn_mask,
         )
-        output = self.output(output)
 
         return output
 
