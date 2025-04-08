@@ -679,6 +679,55 @@ class Transformer(nn.Module):
 
         return output
 
+    @torch.inference_mode()
+    def inference(
+        self,
+        src: Tensor,
+        tgt_start_token_id: int,
+        tgt_end_token_id: int,
+        src_key_padding_mask: Optional[Tensor] = None,
+        src_attn_mask: Optional[Tensor] = None,
+    ) -> list:
+        """推理时的前向计算
+
+        Args:
+            src (Tensor): 源序列 tokens
+            tgt_start_token_id (int): 目标序列的起始 token id
+            tgt_end_token_id (int): 目标序列的结束 token id
+            src_key_padding_mask (Optional[Tensor], optional): src 的 padding mask, shape: [bz, len_src]. Defaults to None.
+            src_attn_mask (Optional[Tensor], optional): 下三角 causal mask, shape: [len_src, len_src]. Defaults to None.
+
+        Returns:
+            list: 生成的 token_ids 列表
+        """
+        assert src.shape[0] == 1, "batch_size must be 1"
+        device = src.device
+
+        memory_tuple = self.encode(src, src_key_padding_mask, src_attn_mask)
+
+        tgt_tokens = [tgt_start_token_id]
+
+        for _ in range(self.max_length):
+            tgt = torch.LongTensor([tgt_tokens]).to(device)
+            tgt_padding_mask = torch.zeros_like(tgt, device=device, dtype=torch.bool)
+            causal_mask = generate_causal_mask(tgt.size()[1]).to(device)
+
+            output = self.decode(
+                tgt,
+                memory_tuple,
+                tgt_key_padding_mask=tgt_padding_mask,
+                tgt_attn_mask=causal_mask,
+                memory_key_padding_mask=src_key_padding_mask,
+                memory_attn_mask=None,
+            )[0]
+            token_id = output[-1].argmax().item()
+            tgt_tokens.append(token_id)
+
+            if token_id == tgt_end_token_id:
+                break
+
+        return tgt_tokens
+
 
 if __name__ == "__main__":
     from ..utils import generate_batch_text_tokens

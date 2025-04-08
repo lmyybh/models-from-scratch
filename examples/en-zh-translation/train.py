@@ -26,6 +26,7 @@ def init_seed(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+
 class Trainer:
     def __init__(self, config) -> None:
         self.config = config
@@ -123,7 +124,7 @@ class Trainer:
 
         en_texts = [
             "new Questions Over California Water Project",
-            "You actually have to implement the solution – and be willing to change course if it turns out that you did not know quite as much as you thought.",
+            "I had no idea it was a medal but my performance was the best I could have done , that is why I was so happy , that all the training and hard work had paid off .",
         ]
         for en_text in en_texts:
             zh_text = self.translate(en_text)

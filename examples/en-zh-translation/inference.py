@@ -39,52 +39,37 @@ class Inferencer:
             src = en_tokens["input_ids"].to(self.device)
             src_padding_mask = en_tokens["attention_mask"].to(self.device)
 
-            encoder_outputs = self.model.encode(src, src_padding_mask)
+            zh_tokens = self.model.inference(
+                src,
+                tgt_start_token_id=zh_tokenizer.cls_token_id,
+                tgt_end_token_id=zh_tokenizer.sep_token_id,
+                src_key_padding_mask=src_padding_mask,
+                src_attn_mask=None,
+            )
 
-            zh_text = ""
-            for _ in range(self.max_length):
-                zh_tokens = collactor.encode_chinese([zh_text])
-
-                tgt = zh_tokens["input_ids"][:, :-1].to(self.device)
-                tgt_padding_mask = zh_tokens["attention_mask"][:, :-1].to(self.device)
-                causal_mask = generate_causal_mask(tgt.size()[1]).to(self.device)
-
-                output = self.model.decode(
-                    tgt,
-                    encoder_outputs,
-                    tgt_key_padding_mask=tgt_padding_mask,
-                    tgt_attn_mask=causal_mask,
-                    memory_key_padding_mask=src_padding_mask,
-                    memory_attn_mask=None,
-                )
-                token_id = output[0][-1].argmax().item()
-
-                if token_id == zh_tokenizer.sep_token_id:
-                    break
-
-                word = zh_tokenizer.convert_ids_to_tokens(token_id)
-                zh_text += word
+            zh_text = zh_tokenizer.decode(
+                zh_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True
+            )
 
         return zh_text
 
 
-if __name__ == "__main__":    
+if __name__ == "__main__":
     with open("./config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
     inferencer = Inferencer(
         config,
-        ckpt="/mnt/z/models/transformer/transformer.pth",
-        device=0,
+        ckpt="/data1/glcheng/download/translation-dataset/checkpoints/transformer.pth",
+        device=6,
         max_length=128,
     )
-    
+
     en_texts = [
         "new Questions Over California Water Project",
-        "he was the brother that went with the flow .",
-        "You actually have to implement the solution – and be willing to change course if it turns out that you did not know quite as much as you thought.",
+        "I had no idea it was a medal but my performance was the best I could have done , that is why I was so happy , that all the training and hard work had paid off .",
     ]
-    
+
     for en_text in en_texts:
         zh_text = inferencer.translate(en_text)
         print(en_text, zh_text)
