@@ -2,6 +2,8 @@ import yaml
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer
 
+from ..utils import read_yaml
+
 
 class NewsCommentaryDataset(Dataset):
     def __init__(self, en_file, zh_file) -> None:
@@ -41,7 +43,7 @@ class CollactorWithPadding:
         self.max_length = max_length
         self.truncation = truncation
         self.reture_tensors = reture_tensors
-        
+
     def encode_english(self, batch_en):
         batch_en_tokens = self.en_tokenizer.batch_encode_plus(
             batch_en,
@@ -51,9 +53,9 @@ class CollactorWithPadding:
             return_tensors=self.reture_tensors,
         )
         batch_en_tokens["attention_mask"] = ~batch_en_tokens["attention_mask"].to(bool)
-        
+
         return batch_en_tokens
-        
+
     def encode_chinese(self, batch_zh):
         batch_zh_tokens = self.zh_tokenizer.batch_encode_plus(
             batch_zh,
@@ -63,9 +65,8 @@ class CollactorWithPadding:
             return_tensors=self.reture_tensors,
         )
         batch_zh_tokens["attention_mask"] = ~batch_zh_tokens["attention_mask"].to(bool)
-        
+
         return batch_zh_tokens
-        
 
     def __call__(self, batch):
         batch_en, batch_zh = list(zip(*batch))
@@ -76,32 +77,39 @@ class CollactorWithPadding:
         return {"en": batch_en_tokens, "zh": batch_zh_tokens}
 
 
-# load config
-with open("./config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+def build_data(config_file):
+    # load config
+    config = read_yaml(config_file)
 
-# load tokenizer
-en_tokenizer = BertTokenizer.from_pretrained(config["tokenizer"]["en"])
-zh_tokenizer = BertTokenizer.from_pretrained(config["tokenizer"]["zh"])
+    # load tokenizer
+    en_tokenizer = BertTokenizer.from_pretrained(config["tokenizer"]["en"])
+    zh_tokenizer = BertTokenizer.from_pretrained(config["tokenizer"]["zh"])
 
-# init collator
-collactor = CollactorWithPadding(
-    en_tokenizer=en_tokenizer,
-    zh_tokenizer=zh_tokenizer,
-    padding=config["tokenizer"]["padding"],
-    max_length=config["tokenizer"]["max_length"],
-    truncation=config["tokenizer"]["truncation"],
-    reture_tensors=config["tokenizer"]["reture_tensors"],
-)
+    # init collator
+    collactor = CollactorWithPadding(
+        en_tokenizer=en_tokenizer,
+        zh_tokenizer=zh_tokenizer,
+        padding=config["tokenizer"]["padding"],
+        max_length=config["tokenizer"]["max_length"],
+        truncation=config["tokenizer"]["truncation"],
+        reture_tensors=config["tokenizer"]["reture_tensors"],
+    )
 
-# set dataloader
-train_dataloader = DataLoader(
-    NewsCommentaryDataset(
-        en_file=config["dataset"]["train"]["en"],
-        zh_file=config["dataset"]["train"]["zh"],
-    ),
-    batch_size=config["train"]["batch_size"],
-    shuffle=True,
-    num_workers=config["train"]["num_workers"],
-    collate_fn=collactor,
-)
+    # set dataloader
+    train_dataloader = DataLoader(
+        NewsCommentaryDataset(
+            en_file=config["dataset"]["train"]["en"],
+            zh_file=config["dataset"]["train"]["zh"],
+        ),
+        batch_size=config["train"]["batch_size"],
+        shuffle=True,
+        num_workers=config["train"]["num_workers"],
+        collate_fn=collactor,
+    )
+
+    return dict(
+        en_tokenizer=en_tokenizer,
+        zh_tokenizer=zh_tokenizer,
+        collactor=collactor,
+        train_dataloader=train_dataloader,
+    )

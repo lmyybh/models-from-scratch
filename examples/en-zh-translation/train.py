@@ -1,19 +1,25 @@
 import os
-
-work_dir = os.path.dirname(os.path.abspath(__file__))
-os.chdir(work_dir)
-
-import logging
-import yaml
+import argparse
 from tqdm import tqdm
 import random
 import numpy as np
 import torch
 
+from ..utils import init_seed, read_yaml, init_logger, dict2str
 from ...transformer import TransformerConfig, Transformer, generate_causal_mask
-from .data import en_tokenizer, zh_tokenizer, collactor, train_dataloader
+from .data import build_data
 
-logger = logging.getLogger(__name__)
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train model translated from English to Chinese"
+    )
+    parser.add_argument(
+        "--config", type=str, default="config.yaml", help="Location of the config file"
+    )
+    args = parser.parse_args()
+
+    return args
 
 
 def init_seed(seed):
@@ -28,12 +34,16 @@ def init_seed(seed):
 
 
 class Trainer:
-    def __init__(self, config) -> None:
+    def __init__(self, config, data_dict) -> None:
         self.config = config
         self.parse_config()
 
         init_seed(self.seed)
 
+        self.build_logger()
+        self.logger.info("Train config:\n" + dict2str(self.config))
+
+        self.data_dict = data_dict
         self.load_model()
         self.load_optimizer()
         self.load_criterion()
@@ -43,19 +53,30 @@ class Trainer:
         self.epochs = self.config["train"]["epochs"]
         self.device = torch.device(self.config["train"]["gpu"])
         self.lr = self.config["train"]["lr"]
-        self.output_folder = self.config["train"]["output_folder"]
         self.max_length = self.config["tokenizer"]["max_length"]
+        self.pretrained_ckpt = self.config["train"].get("pretrained", None)
+        self.output_folder = self.config["train"]["output_folder"]
+        self.log_file = os.path.join(self.output_folder, "train.log")
+        self.ckpt_folder = os.path.join(self.output_folder, "checkpoints")
+        os.makedirs(self.ckpt_folder, exist_ok=True)
+
+    def build_logger(self):
+        self.logger = init_logger(self.log_file)
 
     def load_model(self):
         model_config = TransformerConfig(
-            src_vocab_size=en_tokenizer.vocab_size,
-            tgt_vocab_size=zh_tokenizer.vocab_size,
+            src_vocab_size=self.data_dict["en_tokenizer"].vocab_size,
+            tgt_vocab_size=self.data_dict["zh_tokenizer"].vocab_size,
             **self.config["model"],
         )
+        self.logger.info("Load model: \n" + str(model_config))
 
-        model = Transformer(model_config).to(self.device)
+        model = Transformer(model_config)
+        if self.pretrained_ckpt is not None:
+            model.load_state_dict(torch.load(self.pretrained_ckpt, map_location="cpu"))
+            self.logger.info("Load pretrained checkpoint: " + self.pretrained_ckpt)
 
-        self.model = model
+        self.model = model.to(self.device)
 
     def load_optimizer(self):
         self.optimizer = torch.optim.Adam(
@@ -65,26 +86,31 @@ class Trainer:
     def load_criterion(self):
         self.criterion = torch.nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)
 
-    def save_checkpoint(self):
-        checkpoint_file = os.path.join(self.output_folder, "transformer.pth")
+    def save_checkpoint(self, epoch):
+        checkpoint_file = os.path.join(self.ckpt_folder, f"model_{epoch+1}.pth")
         torch.save(self.model.state_dict(), checkpoint_file)
-        logger.info("Save:", checkpoint_file)
+        self.logger.info("Save checkpoint: " + checkpoint_file)
 
-    def train(self, train_dataloader):
+    def train(self):
+        train_dataloader = self.data_dict["train_dataloader"]
         for epoch in range(self.epochs):
             # train
+            self.logger.info(f"epoch: {epoch+1}/{self.epochs}, start training...")
+
+            self.model.train()
             with tqdm(total=len(train_dataloader), ncols=150) as _tqdm:
                 _tqdm.set_description(f"epoch: {epoch+1}/{self.epochs}")
 
-                self.model.train()
                 for batch_idx, data in enumerate(train_dataloader):
-                    self.train_batch(batch_idx, data, _tqdm)
+                    loss = self.train_batch(batch_idx, data, _tqdm)
+
+            self.logger.info(f"epoch: {epoch+1}/{self.epochs}, train loss: {loss:.4f}")
 
             # save checkpoint
-            self.save_checkpoint()
+            self.save_checkpoint(epoch)
 
             # evalution
-            self.evaluation()
+            self.evaluation(epoch)
 
     def train_batch(self, batch_idx, data, _tqdm):
         src = data["en"]["input_ids"].to(self.device)
@@ -117,10 +143,12 @@ class Trainer:
         _tqdm.set_postfix(loss=f"{loss.item():.4f}")
         _tqdm.update(1)
 
-    def evaluation(self):
+        return loss.item()
+
+    def evaluation(self, epoch):
         self.model.eval()
 
-        print()
+        self.logger.info(f"epoch: {epoch+1}/{self.epochs}, start validation...")
 
         en_texts = [
             "new Questions Over California Water Project",
@@ -128,26 +156,28 @@ class Trainer:
         ]
         for en_text in en_texts:
             zh_text = self.translate(en_text)
-            print(en_text, zh_text)
+            self.logger.info("-" * 100)
+            self.logger.info(f"[English]: {en_text}")
+            self.logger.info(f"[Chinese]: {zh_text}")
 
     def translate(self, en_text):
         self.model.eval()
 
         with torch.no_grad():
-            en_tokens = collactor.encode_english([en_text])
+            en_tokens = self.data_dict["collactor"].encode_english([en_text])
 
             src = en_tokens["input_ids"].to(self.device)
             src_padding_mask = en_tokens["attention_mask"].to(self.device)
 
             zh_tokens = self.model.inference(
                 src,
-                tgt_start_token_id=zh_tokenizer.cls_token_id,
-                tgt_end_token_id=zh_tokenizer.sep_token_id,
+                tgt_start_token_id=self.data_dict["zh_tokenizer"].cls_token_id,
+                tgt_end_token_id=self.data_dict["zh_tokenizer"].sep_token_id,
                 src_key_padding_mask=src_padding_mask,
                 src_attn_mask=None,
             )
 
-            zh_text = zh_tokenizer.decode(
+            zh_text = self.data_dict["zh_tokenizer"].decode(
                 zh_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True
             )
 
@@ -155,9 +185,10 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    # load config
-    with open("./config.yaml", "r") as f:
-        config = yaml.safe_load(f)
+    args = parse_args()
 
-    trainer = Trainer(config)
-    trainer.train(train_dataloader)
+    data_dict = build_data(args.config)
+
+    config = read_yaml(args.config)
+    trainer = Trainer(config, data_dict)
+    trainer.train()
