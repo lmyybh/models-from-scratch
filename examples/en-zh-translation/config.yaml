@@ -1,17 +1,17 @@
 dataset:
   train:
-    en: /mnt/z/datasets/translation-dataset/train/news-commentary-v13.zh-en.en
-    zh: /mnt/z/datasets/translation-dataset/train/news-commentary-v13.zh-en.zh
+    en: /path/to/train/news-commentary-v13.zh-en.en
+    zh: /path/to/train/news-commentary-v13.zh-en.zh
   dev:
-    en: /mnt/z/datasets/translation-dataset/dev/newsdev2017.tc.en
-    zh: /mnt/z/datasets/translation-dataset/dev/newsdev2017.tc.zh
+    en: /path/to/dev/newsdev2017.tc.en
+    zh: /path/to/dev/newsdev2017.tc.zh
   test:
-    en: /mnt/z/datasets/translation-dataset/test/newstest2017.tc.en
-    zh: /mnt/z/datasets/translation-dataset/test/newstest2017.tc.zh
+    en: /path/to/test/newstest2017.tc.en
+    zh: /path/to/test/newstest2017.tc.zh
 
 tokenizer:
-  en: bert-base-uncased
-  zh: bert-base-chinese
+  en: /path/to/tokenizer/bert-base-uncased
+  zh: /path/to/tokenizer/bert-base-chinese
   padding: True
   max_length: 128
   truncation: True
@@ -19,7 +19,7 @@ tokenizer:
 
 model:
   hidden_size: 512
-  max_position_embeddings: 512
+  max_position_embeddings: 128 # equal to max_length
   num_layers: 1
   num_attention_heads: 8
   attention_dropout: 0.1
@@ -29,9 +29,10 @@ model:
 
 train:
   seed: 420
-  gpu: 0
+  gpu: 6
   batch_size: 64
   num_workers: 16
-  epochs: 10
+  epochs: 50
   lr: 0.001
-  output_folder: /mnt/z/models/transformer
+  pretrained:
+  output_folder: /path/to/output
