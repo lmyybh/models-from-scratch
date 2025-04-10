@@ -32,7 +32,7 @@ class PositionalEncoding(nn.Module):
         """前向计算
 
         Args:
-            x (Tensor): 序列编码
+            x (Tensor): 序列编码, shape: [bz, len, d]
 
         Returns:
             Tensor: 添加位置编码后的序列编码
@@ -103,7 +103,9 @@ def attention_forward(
     # w = q @ k.T / sqrt(d_k), shape: [bz, h, len_q, len_k]
     attn_weights = torch.matmul(query, key.transpose(-1, -2)) * scaling
     if mask is not None:
-        attn_weights.masked_fill_(mask, float("-inf"))  # 将遮挡区域填充 -inf，后续经 softmax 可变为 0
+        attn_weights.masked_fill_(
+            mask, float("-inf")
+        )  # 将遮挡区域填充 -inf，后续经 softmax 可变为 0
 
     # s = softmax(w), shape: [bz, h, len_q, len_k]
     attn_weights = torch.softmax(attn_weights, dim=-1)
@@ -575,11 +577,13 @@ class Transformer(nn.Module):
         """初始化模型参数"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                m.weight.data = nn.init.trunc_normal_(
-                    m.weight.data.to(torch.float32), mean=0.0, std=0.1
-                ).to(m.weight.dtype)
+                m.weight.data.normal_(mean=0.0, std=0.02)
+                if m.bias is not None:
+                    m.bias.data.zero_()
             elif isinstance(m, nn.Embedding):
-                m.weight.data.normal_(mean=0.0, std=0.1)
+                m.weight.data.normal_(mean=0.0, std=0.02)
+                if m.padding_idx is not None:
+                    m.weight.data[m.padding_idx].zero_()
 
     def encode(
         self,

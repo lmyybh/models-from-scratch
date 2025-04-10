@@ -46,6 +46,7 @@ class Trainer:
         self.data_dict = data_dict
         self.load_model()
         self.load_optimizer()
+        self.load_scheduler()
         self.load_criterion()
 
     def parse_config(self):
@@ -53,6 +54,8 @@ class Trainer:
         self.epochs = self.config["train"]["epochs"]
         self.device = torch.device(self.config["train"]["gpu"])
         self.lr = self.config["train"]["lr"]
+        self.warmup_epochs = self.config["train"]["warmup_epochs"]
+        self.lr_decay = self.config["train"]["lr_decay"]
         self.max_length = self.config["tokenizer"]["max_length"]
         self.pretrained_ckpt = self.config["train"].get("pretrained", None)
         self.output_folder = self.config["train"]["output_folder"]
@@ -86,6 +89,16 @@ class Trainer:
     def load_criterion(self):
         self.criterion = torch.nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)
 
+    def load_scheduler(self):
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.optimizer,
+            lr_lambda=lambda epoch: (
+                (epoch + 1) / self.warmup_epochs
+                if epoch < self.warmup_epochs
+                else self.lr_decay ** (epoch - self.warmup_epochs)
+            ),
+        )
+
     def save_checkpoint(self, epoch):
         checkpoint_file = os.path.join(self.ckpt_folder, f"model_{epoch+1}.pth")
         torch.save(self.model.state_dict(), checkpoint_file)
@@ -104,7 +117,9 @@ class Trainer:
                 for batch_idx, data in enumerate(train_dataloader):
                     loss = self.train_batch(batch_idx, data, _tqdm)
 
-            self.logger.info(f"epoch: {epoch+1}/{self.epochs}, train loss: {loss:.4f}")
+            self.logger.info(f"epoch: {epoch+1}/{self.epochs}, lr: {self.scheduler.get_last_lr()},  train loss: {loss:.4f}")
+            
+            self.scheduler.step()
 
             # save checkpoint
             self.save_checkpoint(epoch)

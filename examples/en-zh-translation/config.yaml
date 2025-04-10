@@ -34,5 +34,7 @@ train:
   num_workers: 16
   epochs: 50
   lr: 0.001
+  warmup_epochs: 10
+  lr_decay: 0.95
   pretrained:
   output_folder: /path/to/output
