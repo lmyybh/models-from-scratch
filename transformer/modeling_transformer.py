@@ -290,12 +290,12 @@ class FeedForwardNetworks(nn.Module):
 
 
 class LayerNorm(nn.Module):
-    def __init__(self, normalized_shape: int, eps: int = 1e-5):
+    def __init__(self, normalized_shape: int, eps: float = 1e-5):
         """LayerNorm
 
         Args:
             normalized_shape (int): 归一化的维度
-            eps (int, optional): 避免分母为 0 的附加值. Defaults to 1e-5.
+            eps (float, optional): 避免分母为 0 的附加值. Defaults to 1e-5.
         """
         super().__init__()
         self.gamma = nn.Parameter(torch.ones(normalized_shape))  # 缩放参数
