@@ -1,0 +1,363 @@
+from typing import Optional, Tuple
+import torch
+from torch import nn, Tensor
+import torch.nn.functional as F
+
+from .configuration_llama3 import Llama3Config
+
+
+def generate_casual_mask(size: int) -> Tensor:
+    """生成 casusal mask
+
+    Args:
+        size (int): attention 矩阵维度
+
+    Returns:
+        Tensor: 下三角矩阵，0 表示显示，-inf 表示遮挡
+    """
+    return torch.triu(torch.full((size, size), float("-inf")), diagonal=1)
+
+
+def precompute_freqs_cis(dim: int, seq_len: int, theta: float = 10000.0) -> Tensor:
+    m = torch.arange(seq_len)
+    freqs = 1.0 / theta ** (2 * torch.arange(0, dim // 2) / dim)
+    freqs = torch.outer(m, freqs)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+
+    return freqs_cis
+
+
+def apply_rotary_embedding(
+    q: Tensor, k: Tensor, freqs_cis: Tensor
+) -> Tuple[Tensor, Tensor]:
+    """应用 RoPE 到 query 和 key
+
+    Args:
+        q (Tensor): [bz, h_q, seq_len, head_dim]
+        k (Tensor): [bz, h_kv, seq_len, head_dim]
+        freqs_cis (Tensor): [max_len, head_dim] 预先计算好的频率复数，每个复数表示 cosmθ + sinmθ i
+
+    Returns:
+        Tuple[Tensor, Tensor]: 使用 RoPE 后的 q 和 k
+    """
+
+    seq_len = q.shape[2]
+
+    # 构造 (q0 + q1 i, q2 + q3 i, ...) 的复数形式, shape: [bz, h_q, seq_len, head_dim//2]
+    q = torch.view_as_complex(q.reshape(*q.shape[:-1], -1, 2))
+    # 构造 (k0 + k1 i, k2 + k3 i, ...) 的复数形式, shape: [bz, h_kv, seq_len, head_dim//2]
+    k = torch.view_as_complex(k.reshape(*k.shape[:-1], -1, 2))
+
+    # 复数 [bz, h, seq_len, head_dim//2] -> 两个实数 [bz, h, seq_len, head_dim//2, 2] -> 展开 [bz, h, seq_len, head_dim]
+    q = torch.view_as_real(q * freqs_cis[:seq_len]).flatten(-2)
+    k = torch.view_as_real(k * freqs_cis[:seq_len]).flatten(-2)
+
+    return q, k
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, normalized_shape: int, eps: float = 1e-6) -> None:
+        """RMS Norm
+
+        Args:
+            normalized_shape (int): 归一化的维度
+            eps (float, optional): 避免分母为 0 的附加值. Defaults to 1e-6.
+        """
+        super().__init__()
+        self.eps = eps
+        self.gamma = nn.Parameter(torch.ones(normalized_shape))
+
+    def forward(self, x: Tensor) -> Tensor:
+        """前向计算
+
+        Args:
+            x (Tensor): 输入 Tensor
+
+        Returns:
+            Tensor: 归一化后的 Tensor
+        """
+        return (
+            x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps) * self.gamma
+        )
+
+
+class TokenEmbeddings(nn.Module):
+    def __init__(self, config: Llama3Config) -> None:
+        """token 编码层
+
+        Args:
+            config (Llama3Config): 关于 llama3 模型的配置信息
+        """
+        super().__init__()
+
+        self.lut = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.scaling = config.hidden_size**0.5
+
+    def forward(self, tokens: Tensor) -> Tensor:
+        """前向计算
+
+        Args:
+            tokens (Tensor): 序列 tokens
+
+        Returns:
+            Tensor: 序列编码
+        """
+        return self.lut(tokens) * self.scaling
+
+
+def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
+    """复制 n_rep 次 key 或 value
+
+    Args:
+        x (Tensor): shape: [bz, h_kv, seq_len, d]
+        n_rep (int): 需要复制的次数
+
+    Returns:
+        Tensor: shape: [bz, h_kv * n_rep, seq_len, d]
+    """
+    bz, h_kv, seq_len, d = x.shape
+
+    return (
+        x[:, :, None, :, :]
+        .expand(bz, h_kv, n_rep, seq_len, d)
+        .reshape(bz, h_kv * n_rep, seq_len, d)
+    )
+
+
+class GroupQueryAttention(nn.Module):
+    def __init__(self, config: Llama3Config) -> None:
+        """Group Query Attention
+
+        Args:
+            config (Llama3Config): 关于 llama3 模型的配置信息
+        """
+        super().__init__()
+
+        self.hidden_size = config.hidden_size
+        self.num_attention_heads = config.num_attention_heads
+        self.num_kv_heads = config.num_kv_heads
+        self.n_rep = self.num_attention_heads // self.num_kv_heads
+        self.head_dim = config.head_dim
+        self.scaling = config.head_dim**-0.5
+
+        self.freqs_cis = precompute_freqs_cis(
+            dim=self.head_dim,
+            seq_len=config.max_position_embeddings,
+            theta=config.rope_theta,
+        )
+
+        self.wq = nn.Linear(
+            self.hidden_size,
+            self.num_attention_heads * self.head_dim,
+            bias=config.qkv_bias,
+        )
+        self.wk = nn.Linear(
+            self.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=config.qkv_bias,
+        )
+        self.wv = nn.Linear(
+            self.hidden_size,
+            self.num_kv_heads * self.head_dim,
+            bias=config.qkv_bias,
+        )
+
+        self.wo = nn.Linear(
+            self.num_attention_heads * self.head_dim,
+            self.hidden_size,
+            bias=config.mlp_bias,
+        )
+
+    def transpose_for_scores(self, x: Tensor) -> Tensor:
+        """调整多头 q, k, v 的维度，用于 attention 计算
+
+        Args:
+            x (Tensor): 输入的 query 或 key 或 value, shape: [bz, seq_len, h * d]
+
+        Returns:
+            Tensor: 调整维度后的 Tensor, shape: [bz, h, seq_len, d]
+        """
+
+        # [bz, seq_len, h*d] -> [bz, seq_len, h, d] -> [bz, h, seq_len, d]
+        new_size = x.size()[:2] + (-1, self.head_dim)
+        return x.view(new_size).transpose(1, 2)
+
+    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        """前向计算
+
+        Args:
+            x (Tensor): 输入的 x, shape: [bz, seq_len, hidden_size]
+            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, seq_len]. Defaults to None.
+
+        Returns:
+            Tensor: GQA 输出 Tensor, shape: [bz, seq_len, hidden_size]
+        """
+
+        bz, seq_len = x.shape[:2]
+
+        q = self.transpose_for_scores(self.wq(x))  # [bz, h_q, seq_len, head_dim]
+        k = self.transpose_for_scores(self.wk(x))  # [bz, h_kv, seq_len, head_dim]
+        v = self.transpose_for_scores(self.wv(x))  # [bz, h_kv, seq_len, head_dim]
+
+        q, k = apply_rotary_embedding(q, k, self.freqs_cis.to(q.device))
+
+        k = repeat_kv(k, self.n_rep)  # [bz, h_q, seq_len, head_dim]
+        v = repeat_kv(v, self.n_rep)  # [bz, h_q, seq_len, head_dim]
+
+        # shape: [bz, h_q, seq_len, seq_len]
+        attn_weights = torch.matmul(q, k.transpose(-1, -2)) * self.scaling
+
+        if mask is not None:
+            attn_weights += mask
+
+        attn_weights = torch.softmax(attn_weights, dim=-1)
+
+        # shape: [bz, h_q, seq_len, head_dim]
+        output = torch.matmul(attn_weights, v)
+
+        # shape: [bz, seq_len, h_q * head_dim]
+        output = output.transpose(1, 2).contiguous().view(bz, seq_len, -1)
+        # shape: [bz, seq_len, hidden_size]
+        output = self.wo(output)
+
+        return output
+
+
+class FeedForwardNetworks(nn.Module):
+    def __init__(self, config: Llama3Config) -> None:
+        """前向网络
+
+        Args:
+            config (Llama3Config): 关于 llama3 模型的配置信息
+        """
+
+        super().__init__()
+
+        self.w1 = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=config.mlp_bias
+        )
+        self.w2 = nn.Linear(
+            config.intermediate_size, config.hidden_size, bias=config.mlp_bias
+        )
+        self.w3 = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=config.mlp_bias
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        """前向计算
+
+        Args:
+            x (Tensor): 输入 Tensor, shape: [bz, seq_len, hidden_size]
+
+        Returns:
+            Tensor: 输出 Tensor, shape: [bz, seq_len, hidden_size]
+        """
+        return self.w2(F.silu(self.w3(x)) * self.w1(x))
+
+
+class DecoderLayer(nn.Module):
+    def __init__(self, config: Llama3Config) -> None:
+        """llama3 解码层
+
+        Args:
+            config (Llama3Config): 关于 llama3 模型的配置信息
+        """
+        super().__init__()
+
+        self.attention_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.attention = GroupQueryAttention(config)
+        self.ffn_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.ffn = FeedForwardNetworks(config)
+
+    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        """前向计算
+
+        Args:
+            x (Tensor): 输入的 x, shape: [bz, seq_len, hidden_size]
+            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, seq_len]. Defaults to None.
+
+        Returns:
+            Tensor: 输出 Tensor, shape: [bz, seq_len, hidden_size]
+        """
+
+        x = x + self.attention(self.attention_norm(x), mask=mask)
+        x = x + self.ffn(self.ffn_norm(x))
+
+        return x
+
+
+class Llama3Outputlayer(nn.Module):
+    def __init__(self, config: Llama3Config) -> None:
+        """llama3 输出层
+
+        Args:
+            config (Llama3Config): 关于 llama3 模型的配置信息
+        """
+
+        super().__init__()
+
+        self.linear = nn.Linear(config.hidden_size, config.vocab_size)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """前向计算
+
+        Args:
+            x (Tensor): 输入 Tensor, shape: [bz, seq_len, hidden_size]
+
+        Returns:
+            Tensor: 输出 Tensor, shape: [bz, seq_len, vocab_size]
+        """
+        return self.linear(x)
+
+
+class LLama3(nn.Module):
+    def __init__(self, config: Llama3Config) -> None:
+        """llama3
+
+        Args:
+            config (Llama3Config): 关于 llama3 模型的配置信息
+        """
+
+        super().__init__()
+
+        self.token_embedding = TokenEmbeddings(config)
+        self.layers = nn.ModuleList(
+            [DecoderLayer(config) for _ in range(config.num_layers)]
+        )
+        self.output = Llama3Outputlayer(config)
+
+    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        """前向计算
+
+        Args:
+            x (Tensor): 输入的 x, shape: [bz, seq_len, hidden_size]
+            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, seq_len]. Defaults to None.
+
+        Returns:
+            Tensor: 输出 Tensor, shape: [bz, seq_len, hidden_size]
+        """
+        x = self.token_embedding(x)
+
+        for layer in self.layers:
+            x = layer(x, mask)
+
+        return self.output(x)
+
+
+if __name__ == "__main__":
+    from ..utils import generate_batch_text_tokens
+
+    config = Llama3Config(vocab_size=128)
+
+    device = torch.device(0)
+
+    x = generate_batch_text_tokens(
+        [4, 8, 5], max_len=10, vocab_size=config.vocab_size, pad_index=0
+    ).to(device)
+
+    mask = generate_casual_mask(10).to(device)
+
+    model = LLama3(config).to(device)
+
+    output = model(x, mask=mask)
+    print(output.shape)
