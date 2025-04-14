@@ -348,6 +348,7 @@ class LLama3(nn.Module):
 
         super().__init__()
 
+        self.max_seq_len = config.max_seq_len
         self.token_embedding = TokenEmbeddings(config)
         self.layers = nn.ModuleList(
             [DecoderLayer(config) for _ in range(config.num_layers)]
@@ -382,20 +383,51 @@ class LLama3(nn.Module):
             x = layer(x, start_pos, mask)
 
         return self.output(x)
+    
+    @torch.inference_mode()
+    def generate(self, x: Tensor, stop_token_id: int):
+        bz, seq_len = x.shape
+        
+        assert bz == 1, "batch_size must be 1"
+        
+        output_tokens = x[0].tolist()
+        
+        # prefill
+        output = self.forward(x, start_pos=0)[0] # [seq_len, vocab_size]
+        next_token = output[-1].argmax()
+        output_tokens.append(next_token.item())
+        
+        # decode
+        for start_pos in range(seq_len, self.max_seq_len):    
+            output = self.forward(next_token.view(1, 1), start_pos=start_pos)[0]
+            next_token = output[-1].argmax()            
+            output_tokens.append(next_token.item())
+
+            if next_token.item() == stop_token_id:
+                break
+            
+        return output_tokens
+        
 
 
 if __name__ == "__main__":
     from ..utils import generate_batch_text_tokens
 
-    config = Llama3Config(vocab_size=128)
+    config = Llama3Config(vocab_size=128, max_seq_len=20)
 
     device = torch.device(0)
+    model = LLama3(config).to(device)
 
+    # forward
     x = generate_batch_text_tokens(
         [4, 8, 5], max_len=10, vocab_size=config.vocab_size, pad_index=0
     ).to(device)
 
-    model = LLama3(config).to(device)
-
     output = model(x, start_pos=0)
     print(output.shape)
+
+    # generate
+    model.eval()
+    prompt = generate_batch_text_tokens([5], max_len=5, vocab_size=config.vocab_size, pad_index=0).to(device)
+    tokens = model.generate(prompt, stop_token_id=100)
+    print(prompt, tokens)
