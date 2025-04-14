@@ -8,7 +8,8 @@ class Llama3Config(ModelConfig):
     def __init__(
         self,
         vocab_size: int,
-        max_position_embeddings: int = 512,
+        max_batch_size: int = 4,
+        max_seq_len: int = 512,
         rope_theta: float = 10000.0,
         rope_scaling: float = None,
         hidden_size: int = 512,
@@ -25,7 +26,8 @@ class Llama3Config(ModelConfig):
         **kwargs
     ) -> None:
         self.vocab_size = vocab_size
-        self.max_position_embeddings = max_position_embeddings
+        self.max_batch_size = max_batch_size
+        self.max_seq_len = max_seq_len
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.hidden_size = hidden_size

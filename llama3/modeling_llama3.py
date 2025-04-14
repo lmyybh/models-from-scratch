@@ -142,7 +142,7 @@ class GroupQueryAttention(nn.Module):
 
         self.freqs_cis = precompute_freqs_cis(
             dim=self.head_dim,
-            seq_len=config.max_position_embeddings,
+            seq_len=config.max_seq_len,
             theta=config.rope_theta,
         )
 
@@ -168,6 +168,13 @@ class GroupQueryAttention(nn.Module):
             bias=config.mlp_bias,
         )
 
+        self.cache_k = torch.zeros(
+            config.max_batch_size, self.num_kv_heads, config.max_seq_len, self.head_dim
+        )
+        self.cache_v = torch.zeros(
+            config.max_batch_size, self.num_kv_heads, config.max_seq_len, self.head_dim
+        )
+
     def transpose_for_scores(self, x: Tensor) -> Tensor:
         """调整多头 q, k, v 的维度，用于 attention 计算
 
@@ -182,12 +189,15 @@ class GroupQueryAttention(nn.Module):
         new_size = x.size()[:2] + (-1, self.head_dim)
         return x.view(new_size).transpose(1, 2)
 
-    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self, x: Tensor, start_pos: int, mask: Optional[Tensor] = None
+    ) -> Tensor:
         """前向计算
 
         Args:
             x (Tensor): 输入的 x, shape: [bz, seq_len, hidden_size]
-            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, seq_len]. Defaults to None.
+            start_pos (int): 输入序列的起始位置坐标
+            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, cache_len+seq_len]. Defaults to None.
 
         Returns:
             Tensor: GQA 输出 Tensor, shape: [bz, seq_len, hidden_size]
@@ -201,10 +211,22 @@ class GroupQueryAttention(nn.Module):
 
         q, k = apply_rotary_embedding(q, k, self.freqs_cis.to(q.device))
 
-        k = repeat_kv(k, self.n_rep)  # [bz, h_q, seq_len, head_dim]
-        v = repeat_kv(v, self.n_rep)  # [bz, h_q, seq_len, head_dim]
+        # kv cache
+        self.cache_k = self.cache_k.to(k)
+        self.cache_v = self.cache_v.to(v)
 
-        # shape: [bz, h_q, seq_len, seq_len]
+        self.cache_k[:bz, :, start_pos : start_pos + seq_len] = k
+        self.cache_v[:bz, :, start_pos : start_pos + seq_len] = v
+
+        # [bz, h_kv, cache_len+seq_len, head_dim]
+        k = self.cache_k[:bz, :, : start_pos + seq_len]
+        # [bz, h_kv, cache_len+seq_len, head_dim]
+        v = self.cache_v[:bz, :, : start_pos + seq_len]
+
+        k = repeat_kv(k, self.n_rep)  # [bz, h_q, cache_len+seq_len, head_dim]
+        v = repeat_kv(v, self.n_rep)  # [bz, h_q, cache_len+seq_len, head_dim]
+
+        # shape: [bz, h_q, seq_len, cache_len+seq_len]
         attn_weights = torch.matmul(q, k.transpose(-1, -2)) * self.scaling
 
         if mask is not None:
@@ -269,18 +291,21 @@ class DecoderLayer(nn.Module):
         self.ffn_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.ffn = FeedForwardNetworks(config)
 
-    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self, x: Tensor, start_pos: int, mask: Optional[Tensor] = None
+    ) -> Tensor:
         """前向计算
 
         Args:
             x (Tensor): 输入的 x, shape: [bz, seq_len, hidden_size]
-            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, seq_len]. Defaults to None.
+            start_pos (int): 输入序列的起始位置坐标
+            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, cache_len + seq_len]. Defaults to None.
 
         Returns:
             Tensor: 输出 Tensor, shape: [bz, seq_len, hidden_size]
         """
 
-        x = x + self.attention(self.attention_norm(x), mask=mask)
+        x = x + self.attention(self.attention_norm(x), start_pos, mask=mask)
         x = x + self.ffn(self.ffn_norm(x))
 
         return x
@@ -296,6 +321,9 @@ class Llama3Outputlayer(nn.Module):
 
         super().__init__()
 
+        self.norm = RMSNorm(
+            normalized_shape=config.hidden_size, eps=config.rms_norm_eps
+        )
         self.linear = nn.Linear(config.hidden_size, config.vocab_size)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -307,7 +335,7 @@ class Llama3Outputlayer(nn.Module):
         Returns:
             Tensor: 输出 Tensor, shape: [bz, seq_len, vocab_size]
         """
-        return self.linear(x)
+        return self.linear(self.norm(x))
 
 
 class LLama3(nn.Module):
@@ -326,20 +354,32 @@ class LLama3(nn.Module):
         )
         self.output = Llama3Outputlayer(config)
 
-    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, start_pos: int) -> Tensor:
         """前向计算
 
         Args:
-            x (Tensor): 输入的 x, shape: [bz, seq_len, hidden_size]
-            mask (Optional[Tensor], optional): 下三角 causal mask, shape: [seq_len, seq_len]. Defaults to None.
+            x (Tensor): 输入的 x, shape: [bz, seq_len]
+            start_pos (int): 输入序列的起始位置坐标
 
         Returns:
             Tensor: 输出 Tensor, shape: [bz, seq_len, hidden_size]
         """
+        seq_len = x.shape[1]
         x = self.token_embedding(x)
 
+        mask = None
+        if seq_len > 1:
+            # mask 是 下三角矩阵， 尺寸为 [seq_len, seq_len]
+            mask = torch.full((seq_len, seq_len), float("-inf"), device=x.device)
+            mask = torch.triu(mask, diagonal=1)
+
+            # 当使用 kv-cache 时，需要拼接为 [seq_len, cache_len + seq_len]
+            mask = torch.hstack(
+                (torch.zeros((seq_len, start_pos), device=x.device), mask)
+            ).type_as(x)
+
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, start_pos, mask)
 
         return self.output(x)
 
@@ -355,9 +395,7 @@ if __name__ == "__main__":
         [4, 8, 5], max_len=10, vocab_size=config.vocab_size, pad_index=0
     ).to(device)
 
-    mask = generate_casual_mask(10).to(device)
-
     model = LLama3(config).to(device)
 
-    output = model(x, mask=mask)
+    output = model(x, start_pos=0)
     print(output.shape)
