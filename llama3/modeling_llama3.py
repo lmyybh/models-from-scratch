@@ -49,8 +49,8 @@ def apply_rotary_embedding(
     k = torch.view_as_complex(k.reshape(*k.shape[:-1], -1, 2))
 
     # 复数 [bz, h, seq_len, head_dim//2] -> 两个实数 [bz, h, seq_len, head_dim//2, 2] -> 展开 [bz, h, seq_len, head_dim]
-    q = torch.view_as_real(q * freqs_cis[:seq_len]).flatten(-2)
-    k = torch.view_as_real(k * freqs_cis[:seq_len]).flatten(-2)
+    q = torch.view_as_real(q * freqs_cis).flatten(-2)
+    k = torch.view_as_real(k * freqs_cis).flatten(-2)
 
     return q, k
 
@@ -209,7 +209,10 @@ class GroupQueryAttention(nn.Module):
         k = self.transpose_for_scores(self.wk(x))  # [bz, h_kv, seq_len, head_dim]
         v = self.transpose_for_scores(self.wv(x))  # [bz, h_kv, seq_len, head_dim]
 
-        q, k = apply_rotary_embedding(q, k, self.freqs_cis.to(q.device))
+        self.freqs_cis = self.freqs_cis.to(q.device)
+        q, k = apply_rotary_embedding(
+            q, k, self.freqs_cis[start_pos : start_pos + seq_len]
+        )
 
         # kv cache
         self.cache_k = self.cache_k.to(k)
@@ -383,31 +386,30 @@ class LLama3(nn.Module):
             x = layer(x, start_pos, mask)
 
         return self.output(x)
-    
+
     @torch.inference_mode()
     def generate(self, x: Tensor, stop_token_id: int):
         bz, seq_len = x.shape
-        
+
         assert bz == 1, "batch_size must be 1"
-        
+
         output_tokens = x[0].tolist()
-        
+
         # prefill
-        output = self.forward(x, start_pos=0)[0] # [seq_len, vocab_size]
+        output = self.forward(x, start_pos=0)[0]  # [seq_len, vocab_size]
         next_token = output[-1].argmax()
         output_tokens.append(next_token.item())
-        
+
         # decode
-        for start_pos in range(seq_len, self.max_seq_len):    
+        for start_pos in range(seq_len, self.max_seq_len):
             output = self.forward(next_token.view(1, 1), start_pos=start_pos)[0]
-            next_token = output[-1].argmax()            
+            next_token = output[-1].argmax()
             output_tokens.append(next_token.item())
 
             if next_token.item() == stop_token_id:
                 break
-            
+
         return output_tokens
-        
 
 
 if __name__ == "__main__":
@@ -428,6 +430,8 @@ if __name__ == "__main__":
 
     # generate
     model.eval()
-    prompt = generate_batch_text_tokens([5], max_len=5, vocab_size=config.vocab_size, pad_index=0).to(device)
+    prompt = generate_batch_text_tokens(
+        [5], max_len=5, vocab_size=config.vocab_size, pad_index=0
+    ).to(device)
     tokens = model.generate(prompt, stop_token_id=100)
     print(prompt, tokens)
