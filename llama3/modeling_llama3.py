@@ -352,11 +352,26 @@ class LLama3(nn.Module):
         super().__init__()
 
         self.max_seq_len = config.max_seq_len
+        self.initializer_range = config.initializer_range
         self.token_embedding = TokenEmbeddings(config)
         self.layers = nn.ModuleList(
             [DecoderLayer(config) for _ in range(config.num_layers)]
         )
         self.output = Llama3Outputlayer(config)
+        
+        self._init_weights()
+        
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                m.weight.data.normal_(mean=0.0, std=self.initializer_range)
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.Embedding):
+                m.weight.data.normal_(mean=0.0, std=self.initializer_range)
+                if m.padding_idx is not None:
+                    m.weight.data[m.padding_idx].zero_()        
+            
 
     def forward(self, x: Tensor, start_pos: int) -> Tensor:
         """前向计算
