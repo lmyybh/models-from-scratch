@@ -327,7 +327,7 @@ class Llama3Outputlayer(nn.Module):
         self.norm = RMSNorm(
             normalized_shape=config.hidden_size, eps=config.rms_norm_eps
         )
-        self.linear = nn.Linear(config.hidden_size, config.vocab_size)
+        self.linear = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def forward(self, x: Tensor) -> Tensor:
         """前向计算
@@ -341,7 +341,7 @@ class Llama3Outputlayer(nn.Module):
         return self.linear(self.norm(x))
 
 
-class LLama3(nn.Module):
+class Llama3(nn.Module):
     def __init__(self, config: Llama3Config) -> None:
         """llama3
 
@@ -433,7 +433,7 @@ if __name__ == "__main__":
     config = Llama3Config(vocab_size=128, max_seq_len=20)
 
     device = torch.device(0)
-    model = LLama3(config).to(device)
+    model = Llama3(config).to(device)
 
     # forward
     x = generate_batch_text_tokens(
