@@ -1,8 +1,9 @@
-from typing import Optional, Tuple
+from typing import Optional
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 
+from .rope import precompute_freqs_cis, apply_rotary_embedding
 from .configuration_llama3 import Llama3Config
 
 
@@ -16,43 +17,6 @@ def generate_casual_mask(size: int) -> Tensor:
         Tensor: 下三角矩阵，0 表示显示，-inf 表示遮挡
     """
     return torch.triu(torch.full((size, size), float("-inf")), diagonal=1)
-
-
-def precompute_freqs_cis(dim: int, seq_len: int, theta: float = 10000.0) -> Tensor:
-    m = torch.arange(seq_len)
-    freqs = 1.0 / theta ** (2 * torch.arange(0, dim // 2) / dim)
-    freqs = torch.outer(m, freqs)
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-
-    return freqs_cis
-
-
-def apply_rotary_embedding(
-    q: Tensor, k: Tensor, freqs_cis: Tensor
-) -> Tuple[Tensor, Tensor]:
-    """应用 RoPE 到 query 和 key
-
-    Args:
-        q (Tensor): [bz, h_q, seq_len, head_dim]
-        k (Tensor): [bz, h_kv, seq_len, head_dim]
-        freqs_cis (Tensor): [max_len, head_dim] 预先计算好的频率复数，每个复数表示 cosmθ + sinmθ i
-
-    Returns:
-        Tuple[Tensor, Tensor]: 使用 RoPE 后的 q 和 k
-    """
-
-    seq_len = q.shape[2]
-
-    # 构造 (q0 + q1 i, q2 + q3 i, ...) 的复数形式, shape: [bz, h_q, seq_len, head_dim//2]
-    q = torch.view_as_complex(q.reshape(*q.shape[:-1], -1, 2))
-    # 构造 (k0 + k1 i, k2 + k3 i, ...) 的复数形式, shape: [bz, h_kv, seq_len, head_dim//2]
-    k = torch.view_as_complex(k.reshape(*k.shape[:-1], -1, 2))
-
-    # 复数 [bz, h, seq_len, head_dim//2] -> 两个实数 [bz, h, seq_len, head_dim//2, 2] -> 展开 [bz, h, seq_len, head_dim]
-    q = torch.view_as_real(q * freqs_cis).flatten(-2)
-    k = torch.view_as_real(k * freqs_cis).flatten(-2)
-
-    return q, k
 
 
 class RMSNorm(nn.Module):
@@ -91,7 +55,6 @@ class TokenEmbeddings(nn.Module):
         super().__init__()
 
         self.lut = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.scaling = config.hidden_size**0.5
 
     def forward(self, tokens: Tensor) -> Tensor:
         """前向计算
@@ -102,7 +65,7 @@ class TokenEmbeddings(nn.Module):
         Returns:
             Tensor: 序列编码
         """
-        return self.lut(tokens) * self.scaling
+        return self.lut(tokens)
 
 
 def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
@@ -140,10 +103,16 @@ class GroupQueryAttention(nn.Module):
         self.head_dim = config.head_dim
         self.scaling = config.head_dim**-0.5
 
+        self.rope_method = config.rope_method
         self.freqs_cis = precompute_freqs_cis(
             dim=self.head_dim,
             seq_len=config.max_seq_len,
             theta=config.rope_theta,
+            use_scaled=config.rope_scaling,
+            scale_factor=config.rope_scale_factor,
+            low_freq_factor=config.rope_low_freq_factor,
+            high_freq_factor=config.rope_high_freq_factor,
+            old_context_len=config.rope_old_context_len,
         )
 
         self.wq = nn.Linear(
@@ -211,7 +180,10 @@ class GroupQueryAttention(nn.Module):
 
         self.freqs_cis = self.freqs_cis.to(q.device)
         q, k = apply_rotary_embedding(
-            q, k, self.freqs_cis[start_pos : start_pos + seq_len]
+            q,
+            k,
+            self.freqs_cis[start_pos : start_pos + seq_len],
+            method=self.rope_method,
         )
 
         # kv cache
@@ -358,9 +330,8 @@ class Llama3(nn.Module):
             [DecoderLayer(config) for _ in range(config.num_layers)]
         )
         self.output = Llama3Outputlayer(config)
-        
         self._init_weights()
-        
+
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -370,8 +341,7 @@ class Llama3(nn.Module):
             elif isinstance(m, nn.Embedding):
                 m.weight.data.normal_(mean=0.0, std=self.initializer_range)
                 if m.padding_idx is not None:
-                    m.weight.data[m.padding_idx].zero_()        
-            
+                    m.weight.data[m.padding_idx].zero_()
 
     def forward(self, x: Tensor, start_pos: int) -> Tensor:
         """前向计算
@@ -403,7 +373,13 @@ class Llama3(nn.Module):
         return self.output(x)
 
     @torch.inference_mode()
-    def generate(self, x: Tensor, stop_token_id: int):
+    def generate(self, x: Tensor, stop_token_id: int, max_length: Optional[int] = None):
+        max_length = (
+            self.max_seq_len
+            if max_length is None
+            else min(self.max_seq_len, max_length)
+        )
+
         bz, seq_len = x.shape
 
         assert bz == 1, "batch_size must be 1"
@@ -416,7 +392,7 @@ class Llama3(nn.Module):
         output_tokens.append(next_token.item())
 
         # decode
-        for start_pos in range(seq_len, self.max_seq_len):
+        for start_pos in range(seq_len, max_length - 1):
             output = self.forward(next_token.view(1, 1), start_pos=start_pos)[0]
             next_token = output[-1].argmax()
             output_tokens.append(next_token.item())

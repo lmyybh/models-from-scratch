@@ -10,8 +10,13 @@ class Llama3Config(ModelConfig):
         vocab_size: int,
         max_batch_size: int = 4,
         max_seq_len: int = 512,
+        rope_method: str = "llama3",
         rope_theta: float = 10000.0,
-        rope_scaling: float = None,
+        rope_scaling: bool = False,
+        rope_scale_factor: float = 8.0,
+        rope_low_freq_factor: float = 1.0,
+        rope_high_freq_factor: float = 4.0,
+        rope_old_context_len: int = 8192,
         hidden_size: int = 512,
         head_dim: int = None,
         num_layers: int = 8,
@@ -28,8 +33,15 @@ class Llama3Config(ModelConfig):
         self.vocab_size = vocab_size
         self.max_batch_size = max_batch_size
         self.max_seq_len = max_seq_len
-        self.rope_theta = rope_theta
+
         self.rope_scaling = rope_scaling
+        self.rope_method = rope_method
+        self.rope_theta = rope_theta
+        self.rope_scale_factor = rope_scale_factor
+        self.rope_low_freq_factor = rope_low_freq_factor
+        self.rope_high_freq_factor = rope_high_freq_factor
+        self.rope_old_context_len = rope_old_context_len
+
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.num_attention_heads = num_attention_heads
