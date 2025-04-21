@@ -103,6 +103,7 @@ class GroupQueryAttention(nn.Module):
         self.head_dim = config.head_dim
         self.scaling = config.head_dim**-0.5
 
+        # RoPE
         self.rope_method = config.rope_method
         self.freqs_cis = precompute_freqs_cis(
             dim=self.head_dim,
@@ -373,7 +374,19 @@ class Llama3(nn.Module):
         return self.output(x)
 
     @torch.inference_mode()
-    def generate(self, x: Tensor, stop_token_id: int, max_length: Optional[int] = None):
+    def generate(
+        self, x: Tensor, stop_token_id: int, max_length: Optional[int] = None
+    ) -> list:
+        """推理生成
+
+        Args:
+            x (Tensor): 输入的 x, shape: [bz, seq_len]
+            stop_token_id (int): 序列的结束 token id
+            max_length (Optional[int], optional): 生成的最大长度. Defaults to None.
+
+        Returns:
+            list: 生成的 token_ids 列表
+        """
         max_length = (
             self.max_seq_len
             if max_length is None
@@ -400,7 +413,7 @@ class Llama3(nn.Module):
             if next_token.item() == stop_token_id:
                 break
 
-        return output_tokens
+        return [output_tokens]
 
 
 if __name__ == "__main__":
