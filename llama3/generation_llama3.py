@@ -9,7 +9,7 @@ from .modeling_llama3 import Llama3
 
 
 class LlamaModel:
-    def __init__(self, tokenizer: AutoTokenizer, model: Llama3, device: str = "cuda"):
+    def __init__(self, config: Llama3Config, tokenizer: AutoTokenizer, model: Llama3, device: str = "cuda"):
         """LlamaModel 的初始化方法
 
         Args:
@@ -17,6 +17,7 @@ class LlamaModel:
             model (Llama3): 推理用到的 llama 模型
             device (str, optional): 推理的设备. Defaults to "cuda".
         """
+        self.config = config
         self.tokenizer = tokenizer
         self.model = model
         self.device = device
@@ -55,7 +56,7 @@ class LlamaModel:
 
         tokenizer = AutoTokenizer.from_pretrained("LLM-Research/Llama-3.2-1B")
 
-        return LlamaModel(tokenizer, model, device)
+        return LlamaModel(config, tokenizer, model, device)
 
     @staticmethod
     def _convert_weigths_1B(ckpt_file: str) -> OrderedDict:
