@@ -1,6 +1,6 @@
 from typing import Tuple
 import torch
-from torch import nn, Tensor
+from torch import Tensor
 
 
 def apply_scaling(
@@ -10,18 +10,34 @@ def apply_scaling(
     high_freq_factor: float = 4.0,
     old_context_len: int = 8192,
 ) -> Tensor:
-    low_freq_wavelen = old_context_len / low_freq_factor
-    high_freq_wavelen = old_context_len / high_freq_factor
+    """频率缩放
 
+    Args:
+        freqs (Tensor): 频率
+        scale_factor (float, optional): 缩放因子. Defaults to 8.0.
+        low_freq_factor (float, optional): 低频因子. Defaults to 1.0.
+        high_freq_factor (float, optional): 高频因子. Defaults to 4.0.
+        old_context_len (int, optional): 频率缩放用到的最大文本长度. Defaults to 8192.
+
+    Returns:
+        Tensor: 缩放后的频率
+    """
+    low_freq_wavelen = old_context_len / low_freq_factor # 低频波长
+    high_freq_wavelen = old_context_len / high_freq_factor # 高频波长
+
+    # 计算波长
     wavelen = 2 * torch.pi / freqs
+    # 低频部分（> low_freq_wavelen）进行缩放（除以 scale_factor）
     new_freqs = torch.where(wavelen > low_freq_wavelen, freqs / scale_factor, freqs)
+    # 计算平滑过渡系数
     smooth = (old_context_len / wavelen - low_freq_factor) / (
         high_freq_factor - low_freq_factor
     )
+    # 应用平滑过渡缩放
     return torch.where(
         (wavelen >= high_freq_wavelen) & (wavelen <= low_freq_wavelen),
-        (1 - smooth) * new_freqs / scale_factor + smooth * new_freqs,
-        new_freqs,
+        (1 - smooth) * new_freqs / scale_factor + smooth * new_freqs, # 中间部分线性插值
+        new_freqs, # 高频部分保持原样
     )
 
 
@@ -42,7 +58,7 @@ def precompute_freqs_cis(
         seq_len (int): 输入序列长度
         theta (float, optional): θi 中底数的值. Defaults to 10000.0.
         use_scaled (bool, optional): 是否缩放频率. Defaults to False.
-        scale_factor (float, optional): 频率缩放的倍数. Defaults to 8.0.
+        scale_factor (float, optional): 缩放因子. Defaults to 8.0.
         low_freq_factor (float, optional): 低频因子. Defaults to 1.0.
         high_freq_factor (float, optional): 高频因子. Defaults to 4.0.
         old_context_len (int, optional): 频率缩放用到的最大文本长度. Defaults to 8192.
