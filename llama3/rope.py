@@ -5,7 +5,7 @@ from torch import nn, Tensor
 
 def apply_scaling(
     freqs: Tensor,
-    scale_factor: float = 32.0,
+    scale_factor: float = 8.0,
     low_freq_factor: float = 1.0,
     high_freq_factor: float = 4.0,
     old_context_len: int = 8192,
@@ -30,19 +30,39 @@ def precompute_freqs_cis(
     seq_len: int,
     theta: float = 10000.0,
     use_scaled: bool = False,
-    scale_factor: float = 32.0,
+    scale_factor: float = 8.0,
     low_freq_factor: float = 1.0,
     high_freq_factor: float = 4.0,
     old_context_len: int = 8192,
 ) -> Tensor:
+    """预先计算 RoPE 中的 cosmθi 和 sinmθi
+
+    Args:
+        dim (int): query 或 key 对应的 head_dim
+        seq_len (int): 输入序列长度
+        theta (float, optional): θi 中底数的值. Defaults to 10000.0.
+        use_scaled (bool, optional): 是否缩放频率. Defaults to False.
+        scale_factor (float, optional): 频率缩放的倍数. Defaults to 8.0.
+        low_freq_factor (float, optional): 低频因子. Defaults to 1.0.
+        high_freq_factor (float, optional): 高频因子. Defaults to 4.0.
+        old_context_len (int, optional): 频率缩放用到的最大文本长度. Defaults to 8192.
+
+    Returns:
+        Tensor: 使用极坐标 (1, mθi) 表示的 cosmθi 和 sinmθi
+    """
+    # 计算 θi
     freqs = 1.0 / theta ** (2 * torch.arange(0, dim // 2) / dim)
+    # 频率缩放
     if use_scaled:
         freqs = apply_scaling(
             freqs, scale_factor, low_freq_factor, high_freq_factor, old_context_len
         )
 
+    # 计算 m
     m = torch.arange(seq_len)
+    # 计算 mθi
     freqs = torch.outer(m, freqs)
+    # 极坐标表示 (1, mθi)，对应 cosmθi 和 sinmθi
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
 
     return freqs_cis
@@ -89,7 +109,7 @@ def apply_rotary_embedding_transformers(
     Args:
         q (Tensor): [bz, h_q, seq_len, head_dim]
         k (Tensor): [bz, h_kv, seq_len, head_dim]
-        freqs_cis (Tensor): [max_len, head_dim] 预先计算好的频率复数，每个复数表示 cosmθ + sinmθ i
+        freqs_cis (Tensor): [seq_len, head_dim] 预先计算好的频率复数，每个复数表示 cosmθ + sinmθ i
 
     Returns:
         Tuple[Tensor, Tensor]: 使用 RoPE 后的 q 和 k
@@ -97,19 +117,19 @@ def apply_rotary_embedding_transformers(
     seq_len, half_dim = freqs_cis.shape
 
     cos, sin = torch.split(torch.view_as_real(freqs_cis), 1, dim=-1)
-    cos = cos.view(1, 1, seq_len, half_dim)
-    sin = sin.view(1, 1, seq_len, half_dim)
+    cos = cos.view(1, 1, seq_len, half_dim) # [1, 1, seq_len, head_dim / 2]
+    sin = sin.view(1, 1, seq_len, half_dim) # [1, 1, seq_len, head_dim / 2]
 
     cos = (
         cos[:, :, :, None, :]
         .expand(1, 1, seq_len, 2, half_dim)
         .reshape(1, 1, seq_len, half_dim * 2)
-    )
+    ) # [1, 1, seq_len, head_dim]
     sin = (
         sin[:, :, :, None, :]
         .expand(1, 1, seq_len, 2, half_dim)
         .reshape(1, 1, seq_len, half_dim * 2)
-    )
+    ) # [1, 1, seq_len, head_dim]
 
     q = (q * cos) + (rotate_half(q) * sin)
     k = (k * cos) + (rotate_half(k) * sin)
