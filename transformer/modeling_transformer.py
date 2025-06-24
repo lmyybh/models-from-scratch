@@ -17,7 +17,7 @@ class PositionalEncoding(nn.Module):
 
         # shape: [max_len, 1]
         pos = torch.arange(0, config.max_position_embeddings).unsqueeze(1)
-        div_term = 1000 ** (
+        div_term = 10000 ** (
             -torch.arange(0, config.hidden_size, 2) / config.hidden_size
         )  # shape: [d / 2]
 
@@ -313,7 +313,7 @@ class LayerNorm(nn.Module):
         """
         mean = x.mean(dim=-1, keepdim=True)
         std = x.std(dim=-1, keepdim=True)
-        x = (x - mean) / std + self.eps
+        x = (x - mean) / (std + self.eps)
 
         return x * self.gamma + self.beta
 
