@@ -1,5 +1,7 @@
 # 手撕模型代码
 
+> 代码实现参考 [huggingface/transformers](https://github.com/huggingface/transformers)
+
 # 1. Models
 
 ## 1.1 Transformer
