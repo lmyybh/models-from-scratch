@@ -19,6 +19,14 @@
 (2) 模型结构
     <div align=center><img src="./assets/images/llama3.jpg" height=700/></div>
 
+## 1.3 DeepSeek-V3
+
+(1)
+
+(2) 模型结构
+    <div align=center><img src="./assets/images/deepseek_v3.png" height=500/></div>
+
+
 # 2. Examples
 
 ## 2.1 英译中任务
